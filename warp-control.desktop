@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=WARP Control
+Comment=Cloudflare WARP GUI for Linux
+Exec=python3 /opt/warp-gui/warp_gui.py
+Icon=network-vpn
+Terminal=false
+Type=Application
+Categories=Network;VPN;
+Keywords=cloudflare;warp;vpn;dns;
+StartupNotify=true
