@@ -58,17 +58,30 @@ def run_cmd(args, timeout=8):
     except subprocess.TimeoutExpired:
         return "", "timeout", 1
 
+def get_warp_settings():
+    try:
+        result = subprocess.run(["warp-cli", "settings"], capture_output=True, text=True, check=True)
+        settings = {}
+        for line in result.stdout.splitlines():
+            if ": " in line:
+                key, value = line.split(": ", 1)
+                key = re.sub(r'\([^)]*\)\t', '', key.strip())
+                settings[key] = value.strip()
+                
+        return settings
+    except subprocess.CalledProcessError as e:
+        print(f"Error getting Warp settings: {e}")
+        return {}
 
 def get_status():
     out, err, code = run_cmd(["status"])
+    mode = get_warp_settings().get("Mode", "Unknown")
+    tunnel_type = get_warp_settings().get("WARP tunnel protocol", "Unknown")
     data = {
         "raw": out,
         "connected": False,
-        "mode": "Unknown",
-        "tunnel_type": "Unknown",
-        "ip": "—",
-        "account_type": "—",
-        "dns_mode": "—",
+        "mode": mode,
+        "tunnel_type": tunnel_type,
     }
     if not out:
         data["raw"] = err or "warp-cli not available"
@@ -132,7 +145,7 @@ class ServiceWorker(QThread):
     def run(self):
         try:
             r = subprocess.run(
-                ["pkexec", "systemctl", "restart", "warp-svc"],
+                ["sudo", "systemctl", "restart", "warp-svc"],
                 capture_output=True, text=True, timeout=30
             )
             if r.returncode == 0:
@@ -544,7 +557,7 @@ class WarpGUI(QMainWindow):
         sb_layout.addWidget(self.sb_status)
 
         ver_lbl = QLabel("warp-gui v1.0")
-        ver_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
+        ver_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 14px;")
         sb_layout.addWidget(ver_lbl)
 
         root_layout.addWidget(sidebar)
@@ -928,7 +941,7 @@ class WarpGUI(QMainWindow):
     def _setup_timer(self):
         self.auto_timer = QTimer()
         self.auto_timer.timeout.connect(self._refresh)
-        self.auto_timer.start(5000)
+        self.auto_timer.start(100)
 
         self.clock_timer = QTimer()
         self.clock_timer.timeout.connect(self._update_clock)
@@ -1007,7 +1020,7 @@ class WarpGUI(QMainWindow):
             self._cmd(["disconnect"], "Disconnect")
 
     def _set_mode(self, mode):
-        self._cmd(["set-mode", mode], f"Set mode {mode}")
+        self._cmd(["mode", mode], f"Set mode {mode}")
         if hasattr(self, 'term_output'):
             self.term_output.log(f"Setting mode → {mode}", ACCENT)
 
