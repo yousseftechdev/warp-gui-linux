@@ -49,13 +49,6 @@ chmod +x install.sh
 1. Either through the terminal with the command `warp-gui`
 2. Or through your app launcher/menu, it will be called `WARP Control`
 
-
-## Run directly
-
-```bash
-python3 warp_gui.py
-```
-
 ## Notes
 <!-- - Restarting `warp-svc` uses `pkexec` (polkit) — a password prompt will appear. -->
 - All other operations run as your normal user via `warp-cli`.
