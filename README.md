@@ -7,16 +7,16 @@ I use Cloudflare WARP a LOT because of how my school network is configured (I'm 
 A sleek, dark-themed desktop GUI for managing Cloudflare WARP on Linux — since the official client ships with no GUI.
 
 ## Screenshots
-Dark terminal-inspired UI with sidebar navigation, animated status orb, and live connection metrics.
+Dark terminal-inspired UI with sidebar navigation, animated status orb.
+![screenshot](screenshot.png)
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Live Status** | Animated orb + auto-refreshes every 5s |
+| **Live Status** | Animated orb + auto-refreshes |
 | **Connect / Disconnect** | One-click toggle or big power switch |
 | **Mode Switcher** | WARP, DoH, WARP+DoH, DoT, Proxy, Tunnel-only |
-| **Service Restart** | Restart `warp-svc` via `pkexec` (no terminal needed) |
 | **DNS Stats** | View live DNS query stats from warp-cli |
 | **Settings View** | See all current warp-cli settings |
 | **Account Panel** | Register, delete, apply WARP+ license keys |
@@ -51,5 +51,5 @@ python3 warp_gui.py
 ```
 
 ## Notes
-- Restarting `warp-svc` uses `pkexec` (polkit) — a password prompt will appear.
+<!-- - Restarting `warp-svc` uses `pkexec` (polkit) — a password prompt will appear. -->
 - All other operations run as your normal user via `warp-cli`.
