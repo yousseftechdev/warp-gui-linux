@@ -557,7 +557,7 @@ class WarpGUI(QMainWindow):
         sb_layout.addWidget(self.sb_status)
 
         ver_lbl = QLabel("warp-gui v1.0")
-        ver_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 14px;")
+        ver_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 141px;")
         sb_layout.addWidget(ver_lbl)
 
         root_layout.addWidget(sidebar)
