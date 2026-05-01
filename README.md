@@ -33,16 +33,22 @@ Dark terminal-inspired UI with sidebar navigation, animated status orb.
 
 ## Install
 
+### 1. Clone the repo and cd into it
 ```bash
-# Quick run (no install)
-pip install PyQt6
-python3 warp_gui.py
+git clone https://github.com/yousseftechdev/warp-gui-linux
+cd warp-gui-linux
+```
 
-# System install
+### 2. Run the install script
+```bash
 chmod +x install.sh
 ./install.sh
-# Then run: warp-gui
 ```
+
+### 3. Launch the app!
+1. Either through the terminal with the command `warp-gui`
+2. Or through your app launcher/menu, it will be called `WARP Control`
+
 
 ## Run directly
 
