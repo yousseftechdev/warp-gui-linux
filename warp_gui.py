@@ -80,6 +80,7 @@ def get_status():
     data = {
         "raw": out,
         "connected": False,
+        "connecting": False,
         "mode": mode,
         "tunnel_type": tunnel_type,
     }
@@ -88,6 +89,7 @@ def get_status():
         return data
 
     data["connected"] = "Connected" in out and "Disconnected" not in out
+    data["connecting"] = "Connecting" in out
 
     if m := re.search(r"Status update: (.+)", out):
         data["status_label"] = m.group(1).strip()
@@ -271,6 +273,7 @@ class StatusOrb(QWidget):
         super().__init__(parent)
         self.setFixedSize(120, 120)
         self._connected = False
+        self._connecting = False
         self._pulse = 0.0
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
@@ -287,13 +290,21 @@ class StatusOrb(QWidget):
         self._connected = v
         self.update()
 
+    def set_connecting(self, v):
+        self._connecting = v
+        self.update()
+
     def paintEvent(self, e):
         import math
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx, cy = self.width() // 2, self.height() // 2
-
-        color = QColor(GREEN) if self._connected else QColor(TEXT_DIM)
+        if self._connected:
+            color = QColor(GREEN)
+        elif self._connecting:
+            color = Qcolor(YELLOW)
+        else:
+            color = QColor(TEXT_DIM)
 
         from PyQt6.QtCore import QPointF
         fcx, fcy = float(cx), float(cy)
@@ -303,6 +314,15 @@ class StatusOrb(QWidget):
             ring_alpha = int(self._pulse * 80)
             ring_r = float(45 + self._pulse * 8)
             ring_c = QColor(GREEN)
+            ring_c.setAlpha(ring_alpha)
+            p.setPen(QPen(ring_c, 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(fcx, fcy), ring_r, ring_r)
+
+        if self._connecting:
+            ring_alpha = int(self._pulse * 80)
+            ring_r = float(45 + self._pulse * 8)
+            ring_c = QColor(YELLOW)
             ring_c.setAlpha(ring_alpha)
             p.setPen(QPen(ring_c, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -959,6 +979,7 @@ class WarpGUI(QMainWindow):
 
     def _apply_status(self, data):
         connected = data.get("connected", False)
+        connecting = data.get("connecting", False)
         mode = data.get("mode", "—")
         tunnel = data.get("tunnel_type", "—")
         raw = data.get("raw", "")
@@ -971,18 +992,26 @@ class WarpGUI(QMainWindow):
             self.status_label.setStyleSheet(f"color: {GREEN}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
             self.sb_status.setText(f"● Connected")
             self.sb_status.setStyleSheet(f"color: {GREEN}; font-size: 11px; font-family: monospace;")
+            self.metric_status.set_value("Connected")
+        elif connecting:
+            self.status_label.setText("CONNECTING")
+            self.status_label.setStyleSheet(f"color: {YELLOW}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
+            self.sb_status.setText("○ Connecting")
+            self.sb_status.setStyleSheet(f"color: {YELLOW}; font-size: 11px; font-family: monospace;")
+            self.metric_status.set_value("Connecting")
+
         else:
             self.status_label.setText("DISCONNECTED")
             self.status_label.setStyleSheet(f"color: {RED}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
             self.sb_status.setText("○ Disconnected")
             self.sb_status.setStyleSheet(f"color: {RED}; font-size: 11px; font-family: monospace;")
+            self.metric_status.set_value("Disconnected")
 
         self.tunnel_label.setText(f"Tunnel: {tunnel}")
         self.mode_label.setText(f"Mode: {mode}")
 
         self.metric_tunnel.set_value(tunnel)
         self.metric_mode.set_value(mode)
-        self.metric_status.set_value("Connected" if connected else "Disconnected")
 
         self.last_update_lbl.setText(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
 
