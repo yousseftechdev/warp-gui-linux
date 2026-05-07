@@ -33,12 +33,12 @@ BG_DEEP    = "#0a0c10"
 BG_CARD    = "#0f1318"
 BG_HOVER   = "#161b22"
 BG_BORDER  = "#1e2530"
-ACCENT     = "#f6821f"   # Cloudflare orange
+ACCENT     = "#ffd166"   # Cloudflare orange
 ACCENT2    = "#fbad41"   # warm highlight
 BLUE       = "#4d9fff"
 GREEN      = "#3dfaae"
 RED        = "#ff4d6a"
-YELLOW     = "#ffd166"
+YELLOW     = "#f6821f"
 TEXT_PRI   = "#e8edf2"
 TEXT_SEC   = "#6b7685"
 TEXT_DIM   = "#3a4252"
@@ -302,7 +302,7 @@ class StatusOrb(QWidget):
         if self._connected:
             color = QColor(GREEN)
         elif self._connecting:
-            color = Qcolor(YELLOW)
+            color = QColor(YELLOW)
         else:
             color = QColor(TEXT_DIM)
 
@@ -576,7 +576,7 @@ class WarpGUI(QMainWindow):
         self.sb_status.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; font-family: monospace;")
         sb_layout.addWidget(self.sb_status)
 
-        ver_lbl = QLabel("warp-gui v1.0")
+        ver_lbl = QLabel("warp-gui v1.1")
         ver_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 14px;")
         sb_layout.addWidget(ver_lbl)
 
@@ -985,26 +985,26 @@ class WarpGUI(QMainWindow):
         raw = data.get("raw", "")
 
         self.orb.set_connected(connected)
+        self.orb.set_connecting(connecting)
         self.big_toggle.set_on(connected)
 
         if connected:
             self.status_label.setText("CONNECTED")
             self.status_label.setStyleSheet(f"color: {GREEN}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
             self.sb_status.setText(f"● Connected")
-            self.sb_status.setStyleSheet(f"color: {GREEN}; font-size: 11px; font-family: monospace;")
+            self.sb_status.setStyleSheet(f"color: {GREEN}; font-size: 16px; font-family: monospace;")
             self.metric_status.set_value("Connected")
         elif connecting:
             self.status_label.setText("CONNECTING")
             self.status_label.setStyleSheet(f"color: {YELLOW}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
             self.sb_status.setText("○ Connecting")
-            self.sb_status.setStyleSheet(f"color: {YELLOW}; font-size: 11px; font-family: monospace;")
+            self.sb_status.setStyleSheet(f"color: {YELLOW}; font-size: 16px; font-family: monospace;")
             self.metric_status.set_value("Connecting")
-
         else:
             self.status_label.setText("DISCONNECTED")
             self.status_label.setStyleSheet(f"color: {RED}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
             self.sb_status.setText("○ Disconnected")
-            self.sb_status.setStyleSheet(f"color: {RED}; font-size: 11px; font-family: monospace;")
+            self.sb_status.setStyleSheet(f"color: {RED}; font-size: 16px; font-family: monospace;")
             self.metric_status.set_value("Disconnected")
 
         self.tunnel_label.setText(f"Tunnel: {tunnel}")
