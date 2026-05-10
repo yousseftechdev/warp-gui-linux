@@ -8,26 +8,13 @@ A sleek, dark-themed desktop GUI for managing Cloudflare WARP on Linux — since
 
 ## Screenshots
 Dark terminal-inspired UI with sidebar navigation, animated status orb.
-![screenshot](screenshot.png)
-
-## Features
-
-| Feature | Description |
-|---------|-------------|
-| **Live Status** | Animated orb + auto-refreshes |
-| **Connect / Disconnect** | One-click toggle or big power switch |
-| **Mode Switcher** | WARP, DoH, WARP+DoH, DoT, Proxy, Tunnel-only |
-| **DNS Stats** | View live DNS query stats from warp-cli |
-| **Settings View** | See all current warp-cli settings |
-| **Account Panel** | Register, delete, apply WARP+ license keys |
-| **Rotate Keys** | Rotate WireGuard keys from the UI |
-| **Command Terminal** | Run any `warp-cli` command with quick-pill shortcuts |
-| **Status in Sidebar** | Always-visible connection state |
-| **Clock Widget** | Live local time in the dashboard |
+![screenshot](screenshots/1778416503.png)
+![screenshot2](screenshots/1778416530.png)
 
 ## Requirements
 
 - Python 3.8+
+- notify-send
 - PyQt6 (`pip install PyQt6`)
 - `warp-cli` installed (from Cloudflare's official repo)
 
@@ -50,5 +37,14 @@ chmod +x install.sh
 2. Or through your app launcher/menu, it will be called `WARP Control`
 
 ## Notes
-<!-- - Restarting `warp-svc` uses `pkexec` (polkit) — a password prompt will appear. -->
+- In tiling window managers such as Hyprland, the window will be tiled and stretched sometimes, so use this window rule in your config to stop it from tiling:
+```hyprlang
+# works on hyprland only, look up how to do it on i3
+windowrule {
+    name = untile-warp
+    match:title = WARP Control
+    float = true
+    size = 700,600
+}
+```
 - All other operations run as your normal user via `warp-cli`.
