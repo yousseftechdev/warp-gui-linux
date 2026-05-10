@@ -1,48 +1,50 @@
 #!/usr/bin/env python3
 """
-WARP Control — A modern GUI for Cloudflare WARP on Linux
-Requires: PyQt6, warp-cli
-Install: pip install PyQt6
+WARP Control GUI — single-page redesign
+• No sidebar: everything lives on one scrollable main page
+• Activity ticker showing what WARP is doing right now
+• Desktop notifications on connect / connecting / disconnect
+• System tray icon so you can hide the window and keep it running
 """
 
 import sys
 import subprocess
-import json
 import re
 import os
+import socket
+import threading
 from datetime import datetime
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QComboBox, QFrame, QScrollArea,
-    QGraphicsDropShadowEffect, QSizePolicy, QStackedWidget,
-    QGridLayout, QProgressBar, QTextEdit, QTabWidget, QSpacerItem
+    QPushButton, QLabel, QFrame, QScrollArea,
+    QGraphicsDropShadowEffect, QSizePolicy, QTextEdit,
+    QGridLayout, QLineEdit, QSystemTrayIcon, QMenu,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
-    QEasingCurve, QRect, QSize, QPoint, pyqtProperty
+    QEasingCurve, QRectF, QPointF, pyqtProperty,
 )
 from PyQt6.QtGui import (
     QFont, QColor, QPainter, QPainterPath, QLinearGradient,
-    QRadialGradient, QPen, QBrush, QPixmap, QIcon, QFontDatabase,
-    QPalette, QConicalGradient
+    QRadialGradient, QPen, QBrush, QIcon, QPalette, QPixmap,
+    QAction,
 )
 
-
 # ─── Color Palette ────────────────────────────────────────────────────────────
-BG_DEEP    = "#0a0c10"
-BG_CARD    = "#0f1318"
-BG_HOVER   = "#161b22"
-BG_BORDER  = "#1e2530"
-ACCENT     = "#ffd166"   # Cloudflare orange
-ACCENT2    = "#fbad41"   # warm highlight
-BLUE       = "#4d9fff"
-GREEN      = "#3dfaae"
-RED        = "#ff4d6a"
-YELLOW     = "#f6821f"
-TEXT_PRI   = "#e8edf2"
-TEXT_SEC   = "#6b7685"
-TEXT_DIM   = "#3a4252"
-GLOW       = "rgba(246, 130, 31, 0.35)"
+BG_DEEP   = "#0a0c10"
+BG_CARD   = "#0f1318"
+BG_HOVER  = "#161b22"
+BG_BORDER = "#1e2530"
+ACCENT    = "#ffd166"
+ACCENT2   = "#fbad41"
+BLUE      = "#4d9fff"
+GREEN     = "#3ada8e"
+RED       = "#ff4d6a"
+YELLOW    = "#f6821f"
+TEXT_PRI  = "#e8edf2"
+TEXT_SEC  = "#6b7685"
+TEXT_DIM  = "#3a4252"
 
 
 # ─── Warp CLI Backend ─────────────────────────────────────────────────────────
@@ -50,7 +52,7 @@ def run_cmd(args, timeout=8):
     try:
         r = subprocess.run(
             ["warp-cli"] + args,
-            capture_output=True, text=True, timeout=timeout
+            capture_output=True, text=True, timeout=timeout,
         )
         return r.stdout.strip(), r.stderr.strip(), r.returncode
     except FileNotFoundError:
@@ -58,64 +60,71 @@ def run_cmd(args, timeout=8):
     except subprocess.TimeoutExpired:
         return "", "timeout", 1
 
+
 def get_warp_settings():
     try:
-        result = subprocess.run(["warp-cli", "settings"], capture_output=True, text=True, check=True)
+        result = subprocess.run(
+            ["warp-cli", "settings"], capture_output=True, text=True, check=True,
+        )
         settings = {}
         for line in result.stdout.splitlines():
             if ": " in line:
                 key, value = line.split(": ", 1)
                 key = re.sub(r'\([^)]*\)\t', '', key.strip())
                 settings[key] = value.strip()
-                
         return settings
-    except subprocess.CalledProcessError as e:
-        print(f"Error getting Warp settings: {e}")
+    except subprocess.CalledProcessError:
         return {}
+
 
 def get_status():
     out, err, code = run_cmd(["status"])
-    mode = get_warp_settings().get("Mode", "Unknown")
-    tunnel_type = get_warp_settings().get("WARP tunnel protocol", "Unknown")
+    settings = get_warp_settings()
+    mode = settings.get("Mode", "Unknown")
+    tunnel_type = settings.get("WARP tunnel protocol", "Unknown")
     data = {
         "raw": out,
         "connected": False,
         "connecting": False,
         "mode": mode,
         "tunnel_type": tunnel_type,
+        "activity": "",
     }
     if not out:
         data["raw"] = err or "warp-cli not available"
+        data["activity"] = err or "warp-cli not available"
         return data
 
     data["connected"] = "Connected" in out and "Disconnected" not in out
     data["connecting"] = "Connecting" in out
 
-    if m := re.search(r"Status update: (.+)", out):
-        data["status_label"] = m.group(1).strip()
+    # Pull the most descriptive activity line from the raw output
+    activity_line = ""
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("Status update"):
+            # Prefer lines that look like an action description
+            if any(kw in stripped.lower() for kw in [
+                "performing", "resolving", "establishing", "handshake",
+                "authenticating", "fetching", "routing", "connected",
+                "connecting", "disconnected", "registering", "probing",
+                "checking", "waiting", "retrying", "failed", "success",
+            ]):
+                activity_line = stripped
+                break
+    if not activity_line:
+        # Fall back to last non-empty line
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        activity_line = lines[-1] if lines else ""
+
+    data["activity"] = activity_line
 
     if m := re.search(r"Mode: (.+)", out):
         data["mode"] = m.group(1).strip()
-
     if m := re.search(r"Tunnel Type: (.+)", out):
         data["tunnel_type"] = m.group(1).strip()
 
     return data
-
-
-def get_account():
-    out, _, _ = run_cmd(["account"])
-    return out if out else "Not registered"
-
-
-def get_settings():
-    out, _, _ = run_cmd(["settings"])
-    return out if out else ""
-
-
-def get_dns_stats():
-    out, _, _ = run_cmd(["dns", "stats"], timeout=5)
-    return out if out else ""
 
 
 # ─── Worker Threads ───────────────────────────────────────────────────────────
@@ -148,7 +157,7 @@ class ServiceWorker(QThread):
         try:
             r = subprocess.run(
                 ["sudo", "systemctl", "restart", "warp-svc"],
-                capture_output=True, text=True, timeout=30
+                capture_output=True, text=True, timeout=30,
             )
             if r.returncode == 0:
                 self.result.emit("warp-svc restarted successfully", True)
@@ -191,19 +200,17 @@ class GlowButton(QPushButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = self.rect()
-
-        # Glow backdrop
         if self._glow_alpha > 0:
-            g = QRadialGradient(float(r.center().x()), float(r.center().y()), max(r.width(), r.height()) * 0.7)
+            g = QRadialGradient(
+                float(r.center().x()), float(r.center().y()),
+                max(r.width(), r.height()) * 0.7,
+            )
             glow_c = QColor(self._color)
             glow_c.setAlpha(int(self._glow_alpha * 0.25))
             g.setColorAt(0, glow_c)
             g.setColorAt(1, QColor(0, 0, 0, 0))
             p.fillRect(r, g)
-
-        # Border + fill
         path = QPainterPath()
-        from PyQt6.QtCore import QRectF
         path.addRoundedRect(QRectF(r.adjusted(1, 1, -1, -1)), 8, 8)
         if self.isDown():
             p.fillPath(path, QBrush(self._color.darker(130)))
@@ -213,76 +220,31 @@ class GlowButton(QPushButton):
             p.fillPath(path, QBrush(lighter))
         else:
             p.fillPath(path, QBrush(self._color.darker(115)))
-
         pen = QPen(self._color.lighter(130))
         pen.setWidth(1)
         p.strokePath(path, pen)
-
         p.setPen(QColor(TEXT_PRI))
         p.setFont(self.font())
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.text())
         p.end()
 
 
-class ToggleSwitch(QWidget):
-    toggled = pyqtSignal(bool)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._on = False
-        self._pos = 4.0
-        self.setFixedSize(56, 28)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._anim = QPropertyAnimation(self, b"pos_x")
-        self._anim.setDuration(220)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutBack)
-
-    def get_pos_x(self): return self._pos
-    def set_pos_x(self, v):
-        self._pos = v
-        self.update()
-    pos_x = pyqtProperty(float, get_pos_x, set_pos_x)
-
-    def set_on(self, on):
-        self._on = on
-        self._pos = 32.0 if on else 4.0
-        self.update()
-
-    def mousePressEvent(self, e):
-        self._on = not self._on
-        self._anim.setStartValue(self._pos)
-        self._anim.setEndValue(32.0 if self._on else 4.0)
-        self._anim.start()
-        self.toggled.emit(self._on)
-
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        track = self.rect().adjusted(0, 4, 0, -4)
-        track_color = QColor(ACCENT) if self._on else QColor(BG_BORDER)
-        p.setBrush(track_color)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(track, 10, 10)
-        p.setBrush(QColor(TEXT_PRI))
-        p.drawEllipse(int(self._pos), 4, 20, 20)
-        p.end()
-
 
 class StatusOrb(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(120, 120)
+        self.setFixedSize(110, 110)
         self._connected = False
         self._connecting = False
         self._pulse = 0.0
+        self._t = 0.0
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
         self._timer.start(30)
-        self._t = 0.0
 
     def _tick(self):
         import math
-        self._t += 0.05
+        self._t += 0.1
         self._pulse = (math.sin(self._t) + 1) / 2
         self.update()
 
@@ -295,41 +257,25 @@ class StatusOrb(QWidget):
         self.update()
 
     def paintEvent(self, e):
-        import math
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx, cy = self.width() // 2, self.height() // 2
+        fcx, fcy = float(cx), float(cy)
         if self._connected:
             color = QColor(GREEN)
         elif self._connecting:
             color = QColor(YELLOW)
         else:
             color = QColor(TEXT_DIM)
-
-        from PyQt6.QtCore import QPointF
-        fcx, fcy = float(cx), float(cy)
-
-        # Outer pulse ring
-        if self._connected:
+        if self._connected or self._connecting:
             ring_alpha = int(self._pulse * 80)
-            ring_r = float(45 + self._pulse * 8)
-            ring_c = QColor(GREEN)
+            ring_r = float(42 + self._pulse * 8)
+            ring_c = QColor(color)
             ring_c.setAlpha(ring_alpha)
             p.setPen(QPen(ring_c, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(fcx, fcy), ring_r, ring_r)
-
-        if self._connecting:
-            ring_alpha = int(self._pulse * 80)
-            ring_r = float(45 + self._pulse * 8)
-            ring_c = QColor(YELLOW)
-            ring_c.setAlpha(ring_alpha)
-            p.setPen(QPen(ring_c, 1.5))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawEllipse(QPointF(fcx, fcy), ring_r, ring_r)
-
-        # Mid glow
-        glow_r = 38.0
+        glow_r = 35.0
         g = QRadialGradient(fcx, fcy, glow_r)
         inner = QColor(color)
         inner.setAlpha(60 if self._connected else 20)
@@ -338,23 +284,17 @@ class StatusOrb(QWidget):
         p.setBrush(g)
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(QPointF(fcx, fcy), glow_r, glow_r)
-
-        # Core orb
-        core = QRadialGradient(fcx - 6, fcy - 6, 20.0)
+        core = QRadialGradient(fcx - 6, fcy - 6, 18.0)
         c1 = QColor(color).lighter(150 if self._connected else 100)
         c1.setAlpha(255)
         core.setColorAt(0, c1)
         core.setColorAt(1, color.darker(140))
         p.setBrush(core)
-        pen = QPen(color.lighter(120), 1.5)
-        p.setPen(pen)
-        p.drawEllipse(QPointF(fcx, fcy), 22.0, 22.0)
-
-        # Specular highlight
+        p.setPen(QPen(color.lighter(120), 1.5))
+        p.drawEllipse(QPointF(fcx, fcy), 20.0, 20.0)
         p.setPen(Qt.PenStyle.NoPen)
-        hi = QColor(255, 255, 255, 60)
-        p.setBrush(hi)
-        p.drawEllipse(cx - 9, cy - 13, 10, 6)
+        p.setBrush(QColor(255, 255, 255, 60))
+        p.drawEllipse(cx - 8, cy - 12, 9, 5)
         p.end()
 
 
@@ -372,19 +312,22 @@ class MetricCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(4)
-
         top = QHBoxLayout()
         icon_lbl = QLabel(icon)
-        icon_lbl.setStyleSheet(f"color: {ACCENT}; font-size: 16px;")
+        icon_lbl.setStyleSheet(f"color: {ACCENT}; font-size: 15px;")
         lbl = QLabel(label)
-        lbl.setStyleSheet(f"color: {TEXT_SEC}; font-size: 11px; font-family: 'JetBrains Mono', monospace; letter-spacing: 1.5px; text-transform: uppercase;")
+        lbl.setStyleSheet(
+            f"color: {TEXT_SEC}; font-size: 10px; font-family: monospace; "
+            f"letter-spacing: 1.5px; text-transform: uppercase;"
+        )
         top.addWidget(icon_lbl)
         top.addWidget(lbl)
         top.addStretch()
         layout.addLayout(top)
-
         self.value_lbl = QLabel(value)
-        self.value_lbl.setStyleSheet(f"color: {TEXT_PRI}; font-size: 15px; font-weight: 600; font-family: 'JetBrains Mono', monospace;")
+        self.value_lbl.setStyleSheet(
+            f"color: {TEXT_PRI}; font-size: 14px; font-weight: 600; font-family: monospace;"
+        )
         layout.addWidget(self.value_lbl)
 
     def set_value(self, v):
@@ -411,29 +354,68 @@ class LogView(QTextEdit):
     def log(self, msg, color=None):
         ts = datetime.now().strftime("%H:%M:%S")
         color = color or GREEN
-        self.append(f'<span style="color:{TEXT_SEC}">[{ts}]</span> <span style="color:{color}">{msg}</span>')
+        self.append(
+            f'<span style="color:{TEXT_SEC}">[{ts}]</span> '
+            f'<span style="color:{color}">{msg}</span>'
+        )
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+
+def _section_label(text):
+    lbl = QLabel(text.upper())
+    lbl.setStyleSheet(
+        f"color: {TEXT_DIM}; font-size: 10px; letter-spacing: 2.5px; "
+        f"font-family: monospace; margin-top: 6px;"
+    )
+    return lbl
+
+
+def _separator():
+    sep = QFrame()
+    sep.setFixedHeight(1)
+    sep.setStyleSheet(f"background: {BG_BORDER}; margin: 4px 0;")
+    return sep
+
+
+# ─── Tray Icon Builder ────────────────────────────────────────────────────────
+def _make_tray_icon(state: str) -> QIcon:
+    """Draw a tiny coloured circle as the tray icon."""
+    color_map = {"connected": GREEN, "connecting": YELLOW, "disconnected": RED}
+    color = QColor(color_map.get(state, TEXT_DIM))
+    px = QPixmap(22, 22)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(color)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(2, 2, 18, 18)
+    p.end()
+    return QIcon(px)
 
 
 # ─── Main Window ──────────────────────────────────────────────────────────────
 class WarpGUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Tool windows are exempted from tiling in Hyprland and i3/sway.
+        # We keep Qt.WindowType.Window so it still gets a taskbar entry on
+        # desktop environments that care about that.
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.Tool)
         self.setWindowTitle("WARP Control")
-        self.setMinimumSize(820, 680)
-        self.resize(900, 720)
-        self._workers = []  # keep refs alive
+        self.setMinimumSize(700, 600)
+        self.resize(820, 860)
+        self._workers: list[QThread] = []
+        self._last_state: str = ""   # "connected" | "connecting" | "disconnected"
 
-        self._setup_fonts()
         self._setup_style()
         self._build_ui()
+        self._setup_tray()
         self._setup_timer()
         self._refresh()
 
-    def _setup_fonts(self):
-        # Try to load a mono font; fall back gracefully
-        pass
-
+    # ── Style ─────────────────────────────────────────────────────────────────
     def _setup_style(self):
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{
@@ -443,22 +425,6 @@ class WarpGUI(QMainWindow):
                 font-size: 13px;
             }}
             QLabel {{ background: transparent; }}
-            QComboBox {{
-                background: {BG_CARD};
-                color: {TEXT_PRI};
-                border: 1px solid {BG_BORDER};
-                border-radius: 8px;
-                padding: 6px 12px;
-                font-size: 13px;
-            }}
-            QComboBox::drop-down {{ border: none; padding-right: 8px; }}
-            QComboBox QAbstractItemView {{
-                background: {BG_HOVER};
-                color: {TEXT_PRI};
-                border: 1px solid {BG_BORDER};
-                selection-background-color: {ACCENT};
-                selection-color: #000;
-            }}
             QScrollBar:vertical {{
                 background: {BG_CARD};
                 width: 6px;
@@ -470,23 +436,6 @@ class WarpGUI(QMainWindow):
                 min-height: 20px;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-            QTabWidget::pane {{ border: 1px solid {BG_BORDER}; border-radius: 10px; background: {BG_CARD}; }}
-            QTabBar::tab {{
-                background: {BG_DEEP};
-                color: {TEXT_SEC};
-                padding: 8px 20px;
-                border: 1px solid transparent;
-                border-bottom: none;
-                margin-right: 2px;
-                border-radius: 8px 8px 0 0;
-                font-size: 12px;
-            }}
-            QTabBar::tab:selected {{
-                background: {BG_CARD};
-                color: {TEXT_PRI};
-                border-color: {BG_BORDER};
-            }}
-            QTabBar::tab:hover:!selected {{ color: {TEXT_PRI}; }}
             QPushButton {{
                 background: {BG_CARD};
                 color: {TEXT_PRI};
@@ -498,124 +447,110 @@ class WarpGUI(QMainWindow):
             QPushButton:pressed {{ background: {BG_DEEP}; }}
         """)
 
+    # ── System Tray ───────────────────────────────────────────────────────────
+    def _setup_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray = None
+            return
+
+        self._tray = QSystemTrayIcon(self)
+        self._tray.setIcon(_make_tray_icon("disconnected"))
+        self._tray.setToolTip("WARP Control")
+
+        menu = QMenu()
+        act_show = QAction("Show / Hide", self)
+        act_show.triggered.connect(self._toggle_window)
+        act_connect = QAction("Connect", self)
+        act_connect.triggered.connect(lambda: self._cmd(["connect"], "Connect"))
+        act_disconnect = QAction("Disconnect", self)
+        act_disconnect.triggered.connect(lambda: self._cmd(["disconnect"], "Disconnect"))
+        act_quit = QAction("Quit", self)
+        act_quit.triggered.connect(self._quit_app)
+
+        menu.addAction(act_show)
+        menu.addSeparator()
+        menu.addAction(act_connect)
+        menu.addAction(act_disconnect)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._tray_activated)
+        self._tray.show()
+
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._toggle_window()
+
+    def _toggle_window(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _quit_app(self):
+        if self._tray:
+            self._tray.hide()
+        QApplication.quit()
+
+    def closeEvent(self, e):
+        """Hide to tray instead of quitting if tray is available."""
+        if self._tray and self._tray.isVisible():
+            self.hide()
+            e.ignore()
+        else:
+            for w in self._workers:
+                w.quit()
+            e.accept()
+
+    # ── Desktop Notifications ─────────────────────────────────────────────────
+    def _notify(self, title: str, msg: str, icon=QSystemTrayIcon.MessageIcon.Information):
+        """Show a desktop notification via the tray balloon (if available),
+        falling back to notify-send on Linux."""
+        if self._tray and self._tray.isVisible():
+            self._tray.showMessage(title, msg, icon, 4000)
+        else:
+            # Fallback: notify-send (Linux) – fire-and-forget
+            try:
+                subprocess.Popen(
+                    ["notify-send", "-a", "WARP Control", title, msg],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                pass
+
+    # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        root = QWidget()
-        self.setCentralWidget(root)
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.setCentralWidget(scroll)
 
-        # ── Sidebar ──────────────────────────────────────────────────────────
-        sidebar = QFrame()
-        sidebar.setFixedWidth(220)
-        sidebar.setStyleSheet(f"""
-            QFrame {{
-                background: {BG_CARD};
-                border-right: 1px solid {BG_BORDER};
-            }}
-        """)
-        sb_layout = QVBoxLayout(sidebar)
-        sb_layout.setContentsMargins(16, 20, 16, 20)
-        sb_layout.setSpacing(4)
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        scroll.setWidget(container)
 
-        # Logo
-        logo_row = QHBoxLayout()
+        main = QVBoxLayout(container)
+        main.setContentsMargins(28, 24, 28, 32)
+        main.setSpacing(18)
+
+        # ── Top bar ──────────────────────────────────────────────────────────
+        topbar = QHBoxLayout()
         logo_icon = QLabel("◈")
-        logo_icon.setStyleSheet(f"color: {ACCENT}; font-size: 24px;")
-        logo_text = QLabel("WARP")
-        logo_text.setStyleSheet(f"color: {TEXT_PRI}; font-size: 18px; font-weight: 700; letter-spacing: 3px;")
-        logo_row.addWidget(logo_icon)
-        logo_row.addWidget(logo_text)
-        logo_row.addStretch()
-        sb_layout.addLayout(logo_row)
-
-        sub_logo = QLabel("Cloudflare Control Panel")
-        sub_logo.setStyleSheet(f"color: {TEXT_SEC}; font-size: 10px; letter-spacing: 1px; margin-bottom: 16px;")
-        sb_layout.addWidget(sub_logo)
-
-        sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background: {BG_BORDER};")
-        sb_layout.addWidget(sep)
-        sb_layout.addSpacing(12)
-
-        # Nav
-        self._nav_btns = []
-        nav_items = [
-            ("▣", "Dashboard", 0),
-            ("◎", "Modes", 1),
-            ("⊞", "DNS & Stats", 2),
-            ("⊟", "Account", 3),
-            ("⌘", "Terminal", 4),
-        ]
-        self.stack = QStackedWidget()
-        for icon, label, idx in nav_items:
-            btn = QPushButton(f"  {icon}  {label}")
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {TEXT_SEC};
-                    border: none;
-                    border-radius: 8px;
-                    text-align: left;
-                    padding: 9px 12px;
-                    font-size: 13px;
-                }}
-                QPushButton:hover {{ background: {BG_HOVER}; color: {TEXT_PRI}; }}
-                QPushButton:checked {{ background: {BG_HOVER}; color: {ACCENT}; border-left: 2px solid {ACCENT}; }}
-            """)
-            btn.setCheckable(True)
-            btn.clicked.connect(lambda _, i=idx: self._nav(i))
-            sb_layout.addWidget(btn)
-            self._nav_btns.append(btn)
-
-        sb_layout.addStretch()
-
-        # Status indicator in sidebar
-        self.sb_status = QLabel("● Checking...")
-        self.sb_status.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; font-family: monospace;")
-        sb_layout.addWidget(self.sb_status)
-
-        ver_lbl = QLabel("warp-gui v1.1")
-        ver_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 14px;")
-        sb_layout.addWidget(ver_lbl)
-
-        root_layout.addWidget(sidebar)
-        root_layout.addWidget(self.stack)
-
-        # ── Pages ─────────────────────────────────────────────────────────────
-        self.stack.addWidget(self._build_dashboard())
-        self.stack.addWidget(self._build_modes())
-        self.stack.addWidget(self._build_dns())
-        self.stack.addWidget(self._build_account())
-        self.stack.addWidget(self._build_terminal())
-
-        self._nav(0)
-
-    def _nav(self, idx):
-        self.stack.setCurrentIndex(idx)
-        for i, btn in enumerate(self._nav_btns):
-            btn.setChecked(i == idx)
-
-    # ── Dashboard ──────────────────────────────────────────────────────────────
-    def _build_dashboard(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(20)
-
-        # Header
-        header = QHBoxLayout()
-        title = QLabel("Dashboard")
-        title.setStyleSheet(f"color: {TEXT_PRI}; font-size: 22px; font-weight: 700;")
+        logo_icon.setStyleSheet(f"color: {ACCENT}; font-size: 22px;")
+        logo_text = QLabel("WARP Control")
+        logo_text.setStyleSheet(f"color: {TEXT_PRI}; font-size: 18px; font-weight: 700; letter-spacing: 2px;")
         self.last_update_lbl = QLabel("Last updated: —")
         self.last_update_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
-        header.addWidget(title)
-        header.addStretch()
-        header.addWidget(self.last_update_lbl)
-        layout.addLayout(header)
+        topbar.addWidget(logo_icon)
+        topbar.addWidget(logo_text)
+        topbar.addStretch()
+        topbar.addWidget(self.last_update_lbl)
+        main.addLayout(topbar)
 
-        # Hero status card
+        # ── Hero status card ─────────────────────────────────────────────────
         hero = QFrame()
         hero.setObjectName("hero")
         hero.setStyleSheet(f"""
@@ -627,110 +562,104 @@ class WarpGUI(QMainWindow):
             }}
         """)
         hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(28, 24, 28, 24)
-        hero_layout.setSpacing(24)
+        hero_layout.setContentsMargins(24, 20, 24, 20)
+        hero_layout.setSpacing(20)
 
-        # Orb
         self.orb = StatusOrb()
         hero_layout.addWidget(self.orb)
 
-        # Status text
         status_col = QVBoxLayout()
-        status_col.setSpacing(8)
+        status_col.setSpacing(6)
         self.status_label = QLabel("DISCONNECTED")
-        self.status_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
+        self.status_label.setStyleSheet(
+            f"color: {RED}; font-size: 24px; font-weight: 800; letter-spacing: 4px;"
+        )
         self.tunnel_label = QLabel("Tunnel: —")
-        self.tunnel_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 13px; font-family: monospace;")
+        self.tunnel_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px; font-family: monospace;")
         self.mode_label = QLabel("Mode: —")
-        self.mode_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 13px; font-family: monospace;")
+        self.mode_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px; font-family: monospace;")
         status_col.addWidget(self.status_label)
         status_col.addWidget(self.tunnel_label)
         status_col.addWidget(self.mode_label)
         hero_layout.addLayout(status_col)
         hero_layout.addStretch()
+        main.addWidget(hero)
 
-        # Big toggle
-        toggle_col = QVBoxLayout()
-        toggle_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.big_toggle = ToggleSwitch()
-        self.big_toggle.toggled.connect(self._on_big_toggle)
-        toggle_col.addWidget(QLabel("Power"))
-        toggle_col.itemAt(0).widget().setStyleSheet(f"color:{TEXT_SEC}; font-size:11px; text-align:center;")
-        toggle_col.addWidget(self.big_toggle, alignment=Qt.AlignmentFlag.AlignCenter)
-        hero_layout.addLayout(toggle_col)
-        layout.addWidget(hero)
+        # ── Activity ticker ──────────────────────────────────────────────────
+        activity_frame = QFrame()
+        activity_frame.setStyleSheet(f"""
+            QFrame {{
+                background: {BG_CARD};
+                border: 0px solid {BG_BORDER};
+                border-radius: 10px;
+            }}
+        """)
+        act_layout = QHBoxLayout(activity_frame)
+        act_layout.setContentsMargins(16, 10, 16, 10)
+        act_layout.setSpacing(10)
+        act_icon = QLabel("⟳")
+        act_icon.setStyleSheet(f"color: {ACCENT}; font-size: 14px;")
+        act_title = QLabel("Activity:")
+        act_title.setStyleSheet(f"color: {TEXT_SEC}; font-size: 11px; font-family: monospace; letter-spacing: 1px;")
+        self.activity_label = QLabel("Waiting for status…")
+        self.activity_label.setStyleSheet(
+            f"color: {TEXT_PRI}; font-size: 12px; font-family: 'JetBrains Mono', monospace;"
+        )
+        self.activity_label.setWordWrap(True)
+        act_layout.addWidget(act_icon)
+        act_layout.addWidget(act_title)
+        act_layout.addWidget(self.activity_label, stretch=1)
+        main.addWidget(activity_frame)
 
-        # Quick Actions
-        qa_label = QLabel("Quick Actions")
-        qa_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 11px; letter-spacing: 2px; text-transform: uppercase;")
-        layout.addWidget(qa_label)
-
+        # ── Quick actions ────────────────────────────────────────────────────
+        main.addWidget(_section_label("Quick Actions"))
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        btns = [
+        for txt, col, cb in [
             ("⟳  Connect",     GREEN,  lambda: self._cmd(["connect"], "Connect")),
             ("✕  Disconnect",  RED,    lambda: self._cmd(["disconnect"], "Disconnect")),
             ("↻  Restart svc", YELLOW, self._restart_service),
             ("⟲  Refresh",     BLUE,   self._refresh),
-        ]
-        for txt, col, cb in btns:
+        ]:
             b = GlowButton(txt, col)
             b.setFixedHeight(40)
             b.setFont(QFont("monospace", 11))
             b.clicked.connect(cb)
             actions.addWidget(b)
-        layout.addLayout(actions)
+        main.addLayout(actions)
 
-        # Metrics grid
-        self.metric_tunnel  = MetricCard("⟐", "TUNNEL TYPE")
-        self.metric_mode    = MetricCard("◈", "WARP MODE")
-        self.metric_status  = MetricCard("◉", "STATUS")
-        self.metric_time    = MetricCard("◷", "LOCAL TIME")
-
+        # ── Metrics grid ─────────────────────────────────────────────────────
+        self.metric_tunnel = MetricCard("⟐", "TUNNEL TYPE")
+        self.metric_mode   = MetricCard("◈", "WARP MODE")
+        self.metric_status = MetricCard("◉", "STATUS")
+        self.metric_time   = MetricCard("◷", "LOCAL TIME")
         grid = QGridLayout()
-        grid.setSpacing(12)
+        grid.setSpacing(10)
         grid.addWidget(self.metric_tunnel, 0, 0)
-        grid.addWidget(self.metric_mode, 0, 1)
+        grid.addWidget(self.metric_mode,   0, 1)
         grid.addWidget(self.metric_status, 1, 0)
-        grid.addWidget(self.metric_time, 1, 1)
-        layout.addLayout(grid)
+        grid.addWidget(self.metric_time,   1, 1)
+        main.addLayout(grid)
 
-        layout.addStretch()
-        return w
+        main.addWidget(_separator())
 
-    # ── Modes ──────────────────────────────────────────────────────────────────
-    def _build_modes(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(20)
-
-        title = QLabel("Connection Modes")
-        title.setStyleSheet(f"color: {TEXT_PRI}; font-size: 22px; font-weight: 700;")
-        layout.addWidget(title)
-
-        desc = QLabel("Switch between WARP modes. Changes take effect immediately.")
-        desc.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px;")
-        layout.addWidget(desc)
+        # ── Connection Modes ─────────────────────────────────────────────────
+        main.addWidget(_section_label("Connection Modes"))
+        modes_hint = QLabel("Switch between WARP modes — changes take effect immediately.")
+        modes_hint.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px;")
+        main.addWidget(modes_hint)
 
         modes_data = [
-            ("warp",           "◈ WARP",            GREEN,  "Full WARP tunnel — encrypts all traffic and routes through Cloudflare's network for privacy and performance."),
-            ("doh",            "◎ DNS over HTTPS",  BLUE,   "Only DNS queries go through Cloudflare. Good for ad/malware blocking without full VPN overhead."),
-            ("warp+doh",       "⊞ WARP + DoH",      ACCENT, "Full WARP tunnel combined with encrypted DNS. Maximum privacy. Recommended for most users."),
-            ("dot",            "◐ DNS over TLS",    ACCENT2,"Encrypts DNS via TLS rather than HTTPS. Similar privacy to DoH with different protocol mechanics."),
-            ("proxy",          "⊟ Proxy Mode",      YELLOW, "Runs a local SOCKS5 proxy (127.0.0.1:40000). Route specific apps through WARP manually."),
-            ("tunnel_only",    "⊙ Tunnel Only",     TEXT_SEC,"Creates the WireGuard tunnel but doesn't override DNS. For advanced routing setups."),
+            ("warp",        "◈ WARP",           GREEN,   "Full WARP tunnel — encrypts all traffic and routes through Cloudflare's network."),
+            ("doh",         "◎ DNS over HTTPS",  BLUE,    "Only DNS queries go through Cloudflare. Good for ad/malware blocking without full VPN overhead."),
+            ("warp+doh",    "⊞ WARP + DoH",      ACCENT,  "Full WARP tunnel combined with encrypted DNS. Maximum privacy. Recommended."),
+            ("dot",         "◐ DNS over TLS",    ACCENT2, "Encrypts DNS via TLS. Similar privacy to DoH with a different protocol."),
+            ("proxy",       "⊟ Proxy Mode",      YELLOW,  "Runs a local SOCKS5 proxy (127.0.0.1:40000). Route specific apps through WARP manually."),
+            ("tunnel_only", "⊙ Tunnel Only",     TEXT_SEC,"Creates the WireGuard tunnel but doesn't override DNS. For advanced setups."),
         ]
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        inner = QWidget()
-        inner.setStyleSheet("background: transparent;")
-        inner_layout = QVBoxLayout(inner)
-        inner_layout.setSpacing(10)
-
-        for mode_id, mode_name, color, mode_desc in modes_data:
+        modes_grid = QGridLayout()
+        modes_grid.setSpacing(10)
+        for i, (mode_id, mode_name, color, mode_desc) in enumerate(modes_data):
             card = QFrame()
             card.setObjectName("modeCard")
             card.setStyleSheet(f"""
@@ -739,174 +668,47 @@ class WarpGUI(QMainWindow):
                     border: 1px solid {BG_BORDER};
                     border-radius: 12px;
                 }}
-                #modeCard:hover {{
-                    border-color: {ACCENT};
-                }}
+                #modeCard:hover {{ border-color: {ACCENT}; }}
             """)
-            c_layout = QHBoxLayout(card)
-            c_layout.setContentsMargins(20, 16, 20, 16)
-
+            cl = QHBoxLayout(card)
+            cl.setContentsMargins(18, 14, 18, 14)
             left = QVBoxLayout()
             nm = QLabel(mode_name)
-            nm.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: 600; font-family: monospace;")
+            nm.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 600; font-family: monospace;")
             dsc = QLabel(mode_desc)
             dsc.setWordWrap(True)
-            dsc.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px;")
+            dsc.setStyleSheet(f"color: {TEXT_SEC}; font-size: 11px;")
             left.addWidget(nm)
             left.addWidget(dsc)
-            c_layout.addLayout(left)
-
-            btn = GlowButton(f"Set {mode_id}", color)
-            btn.setFixedWidth(120)
-            btn.setFixedHeight(36)
+            cl.addLayout(left)
+            btn = GlowButton(f"Set", color)
+            btn.setFixedWidth(64)
+            btn.setFixedHeight(32)
             btn.setFont(QFont("monospace", 11))
             btn.clicked.connect(lambda _, m=mode_id: self._set_mode(m))
-            c_layout.addWidget(btn)
-            inner_layout.addWidget(card)
+            cl.addWidget(btn)
+            modes_grid.addWidget(card, i // 2, i % 2)
+        main.addLayout(modes_grid)
 
-        inner_layout.addStretch()
-        scroll.setWidget(inner)
-        layout.addWidget(scroll)
-        return w
+        main.addWidget(_separator())
 
-    # ── DNS & Stats ────────────────────────────────────────────────────────────
-    def _build_dns(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(16)
-
-        title = QLabel("DNS & Statistics")
-        title.setStyleSheet(f"color: {TEXT_PRI}; font-size: 22px; font-weight: 700;")
-        layout.addWidget(title)
-
-        refresh_btn = GlowButton("⟲  Refresh Stats", BLUE)
-        refresh_btn.setFixedWidth(160)
-        refresh_btn.setFixedHeight(36)
-        refresh_btn.clicked.connect(self._refresh_dns)
-        layout.addWidget(refresh_btn)
-
-        self.dns_output = LogView()
-        self.dns_output.setMinimumHeight(200)
-        layout.addWidget(self.dns_output)
-
-        # Settings section
-        settings_label = QLabel("Current Settings")
-        settings_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 11px; letter-spacing: 2px;")
-        layout.addWidget(settings_label)
-
-        self.settings_output = LogView()
-        self.settings_output.setMinimumHeight(180)
-        layout.addWidget(self.settings_output)
-
-        # Disconnect on network change toggle
-        pref_row = QHBoxLayout()
-        pref_lbl = QLabel("Extra options")
-        pref_lbl.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px;")
-
-        btn_rotation = GlowButton("⟳ Rotate Keys", ACCENT2)
-        btn_rotation.setFixedHeight(36)
-        btn_rotation.clicked.connect(lambda: self._cmd(["rotate-keys"], "Rotate Keys"))
-
-        btn_reset_settings = GlowButton("↺ Reset Settings", RED)
-        btn_reset_settings.setFixedHeight(36)
-        btn_reset_settings.clicked.connect(lambda: self._cmd(["settings", "reset"], "Reset Settings"))
-
-        pref_row.addWidget(pref_lbl)
-        pref_row.addStretch()
-        pref_row.addWidget(btn_rotation)
-        pref_row.addWidget(btn_reset_settings)
-        layout.addLayout(pref_row)
-        return w
-
-    # ── Account ───────────────────────────────────────────────────────────────
-    def _build_account(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(16)
-
-        title = QLabel("Account")
-        title.setStyleSheet(f"color: {TEXT_PRI}; font-size: 22px; font-weight: 700;")
-        layout.addWidget(title)
-
-        self.account_output = LogView()
-        layout.addWidget(self.account_output)
-
-        btn_row = QHBoxLayout()
-        for label, args, color in [
-            ("⟲  Refresh",     ["account"],                 BLUE),
-            ("⊞  Register",    ["registration", "new"],     GREEN),
-            ("✕  Delete Reg.", ["registration", "delete"],  RED),
-        ]:
-            b = GlowButton(label, color)
-            b.setFixedHeight(38)
-            b.clicked.connect(lambda _, a=args, l=label: self._cmd_account(a, l))
-            btn_row.addWidget(b)
-        layout.addLayout(btn_row)
-
-        sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background: {BG_BORDER};")
-        layout.addWidget(sep)
-
-        # License key input
-        lic_label = QLabel("WARP+ License Key")
-        lic_label.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px; letter-spacing: 1px;")
-        layout.addWidget(lic_label)
-
-        lic_row = QHBoxLayout()
-        from PyQt6.QtWidgets import QLineEdit
-        self.lic_input = QLineEdit()
-        self.lic_input.setPlaceholderText("xxxxxxxx-xxxxxxxx-xxxxxxxx")
-        self.lic_input.setStyleSheet(f"""
-            QLineEdit {{
-                background: {BG_CARD};
-                color: {TEXT_PRI};
-                border: 1px solid {BG_BORDER};
-                border-radius: 8px;
-                padding: 8px 14px;
-                font-family: monospace;
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{ border-color: {ACCENT}; }}
-        """)
-        lic_btn = GlowButton("Apply Key", ACCENT)
-        lic_btn.setFixedWidth(110)
-        lic_btn.setFixedHeight(38)
-        lic_btn.clicked.connect(self._apply_license)
-        lic_row.addWidget(self.lic_input)
-        lic_row.addWidget(lic_btn)
-        layout.addLayout(lic_row)
-        layout.addStretch()
-        return w
-
-    # ── Terminal ──────────────────────────────────────────────────────────────
-    def _build_terminal(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(12)
-
-        title = QLabel("Command Terminal")
-        title.setStyleSheet(f"color: {TEXT_PRI}; font-size: 22px; font-weight: 700;")
-        layout.addWidget(title)
-
-        desc = QLabel("Run warp-cli commands directly. Output is shown below.")
-        desc.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px;")
-        layout.addWidget(desc)
+        # ── Terminal ─────────────────────────────────────────────────────────
+        main.addWidget(_section_label("Command Terminal"))
+        term_hint = QLabel("Run warp-cli commands directly. Output is shown below.")
+        term_hint.setStyleSheet(f"color: {TEXT_SEC}; font-size: 12px;")
+        main.addWidget(term_hint)
 
         self.term_output = LogView()
-        self.term_output.setMinimumHeight(340)
+        self.term_output.setMinimumHeight(200)
+        self.term_output.setMaximumHeight(320)
         self.term_output.log("WARP Control Terminal ready. Enter a command below.", ACCENT)
-        layout.addWidget(self.term_output)
+        main.addWidget(self.term_output)
 
-        from PyQt6.QtWidgets import QLineEdit
         input_row = QHBoxLayout()
         prompt = QLabel("warp-cli")
         prompt.setStyleSheet(f"color: {ACCENT}; font-family: monospace; font-size: 13px; font-weight: 700;")
         self.term_input = QLineEdit()
-        self.term_input.setPlaceholderText("status / connect / disconnect / help ...")
+        self.term_input.setPlaceholderText("status / connect / disconnect / help …")
         self.term_input.setStyleSheet(f"""
             QLineEdit {{
                 background: {BG_CARD};
@@ -927,16 +729,15 @@ class WarpGUI(QMainWindow):
         input_row.addWidget(prompt)
         input_row.addWidget(self.term_input)
         input_row.addWidget(run_btn)
-        layout.addLayout(input_row)
+        main.addLayout(input_row)
 
-        # Quick cmd pills
+        # Quick pills
         pills_label = QLabel("Quick commands:")
         pills_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
-        layout.addWidget(pills_label)
-
+        main.addWidget(pills_label)
         pills = QHBoxLayout()
         pills.setSpacing(8)
-        for cmd in ["status", "account", "settings", "dns stats", "help"]:
+        for cmd in ["connect", "disconnect", "status", "account", "settings", "dns stats", "help"]:
             b = QPushButton(cmd)
             b.setFixedHeight(28)
             b.setStyleSheet(f"""
@@ -954,22 +755,34 @@ class WarpGUI(QMainWindow):
             b.clicked.connect(lambda _, c=cmd: self._quick_cmd(c))
             pills.addWidget(b)
         pills.addStretch()
-        layout.addLayout(pills)
-        return w
+        main.addLayout(pills)
 
-    # ── Logic ─────────────────────────────────────────────────────────────────
+        main.addWidget(_separator())
+
+        # ── Footer ───────────────────────────────────────────────────────────
+        footer = QHBoxLayout()
+        self.sb_status = QLabel("● Checking…")
+        self.sb_status.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; font-family: monospace;")
+        ver_lbl = QLabel("warp-gui v1.2")
+        ver_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        footer.addWidget(self.sb_status)
+        footer.addStretch()
+        footer.addWidget(ver_lbl)
+        main.addLayout(footer)
+
+    # ── Timers ────────────────────────────────────────────────────────────────
     def _setup_timer(self):
         self.auto_timer = QTimer()
         self.auto_timer.timeout.connect(self._refresh)
-        self.auto_timer.start(100)
+        self.auto_timer.start(3000)
 
         self.clock_timer = QTimer()
-        self.clock_timer.timeout.connect(self._update_clock)
+        self.clock_timer.timeout.connect(
+            lambda: self.metric_time.set_value(datetime.now().strftime("%H:%M:%S"))
+        )
         self.clock_timer.start(1000)
 
-    def _update_clock(self):
-        self.metric_time.set_value(datetime.now().strftime("%H:%M:%S"))
-
+    # ── Status logic ──────────────────────────────────────────────────────────
     def _refresh(self):
         w = StatusWorker()
         w.result.connect(self._apply_status)
@@ -978,122 +791,103 @@ class WarpGUI(QMainWindow):
         w.start()
 
     def _apply_status(self, data):
-        connected = data.get("connected", False)
+        connected  = data.get("connected", False)
         connecting = data.get("connecting", False)
-        mode = data.get("mode", "—")
-        tunnel = data.get("tunnel_type", "—")
-        raw = data.get("raw", "")
+        mode       = data.get("mode", "—")
+        tunnel     = data.get("tunnel_type", "—")
+        activity   = data.get("activity", "")
 
         self.orb.set_connected(connected)
         self.orb.set_connecting(connecting)
-        self.big_toggle.set_on(connected)
+
+        new_state = "connected" if connected else ("connecting" if connecting else "disconnected")
+        if new_state != self._last_state:
+            self._fire_notification(new_state)
+            self._last_state = new_state
+            if self._tray:
+                self._tray.setIcon(_make_tray_icon(new_state))
+                self._tray.setToolTip(f"WARP — {new_state.capitalize()}")
 
         if connected:
             self.status_label.setText("CONNECTED")
-            self.status_label.setStyleSheet(f"color: {GREEN}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
+            self.status_label.setStyleSheet(
+                f"color: {GREEN}; font-size: 24px; font-weight: 800; letter-spacing: 4px;"
+            )
             self.sb_status.setText(f"● Connected")
-            self.sb_status.setStyleSheet(f"color: {GREEN}; font-size: 16px; font-family: monospace;")
+            self.sb_status.setStyleSheet(f"color: {GREEN}; font-size: 11px; font-family: monospace;")
             self.metric_status.set_value("Connected")
         elif connecting:
-            self.status_label.setText("CONNECTING")
-            self.status_label.setStyleSheet(f"color: {YELLOW}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
+            self.status_label.setText("CONNECTING…")
+            self.status_label.setStyleSheet(
+                f"color: {YELLOW}; font-size: 24px; font-weight: 800; letter-spacing: 4px;"
+            )
             self.sb_status.setText("○ Connecting")
-            self.sb_status.setStyleSheet(f"color: {YELLOW}; font-size: 16px; font-family: monospace;")
+            self.sb_status.setStyleSheet(f"color: {YELLOW}; font-size: 11px; font-family: monospace;")
             self.metric_status.set_value("Connecting")
         else:
             self.status_label.setText("DISCONNECTED")
-            self.status_label.setStyleSheet(f"color: {RED}; font-size: 26px; font-weight: 800; letter-spacing: 4px;")
+            self.status_label.setStyleSheet(
+                f"color: {RED}; font-size: 24px; font-weight: 800; letter-spacing: 4px;"
+            )
             self.sb_status.setText("○ Disconnected")
-            self.sb_status.setStyleSheet(f"color: {RED}; font-size: 16px; font-family: monospace;")
+            self.sb_status.setStyleSheet(f"color: {RED}; font-size: 11px; font-family: monospace;")
             self.metric_status.set_value("Disconnected")
 
         self.tunnel_label.setText(f"Tunnel: {tunnel}")
         self.mode_label.setText(f"Mode: {mode}")
-
         self.metric_tunnel.set_value(tunnel)
         self.metric_mode.set_value(mode)
-
         self.last_update_lbl.setText(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
 
+        # Activity ticker
+        if activity:
+            self.activity_label.setText(activity)
+        elif connected:
+            self.activity_label.setText("Tunnel active — traffic is protected.")
+        elif connecting:
+            self.activity_label.setText("Establishing connection…")
+        else:
+            self.activity_label.setText("WARP is disconnected.")
+
+    def _fire_notification(self, state: str):
+        info  = QSystemTrayIcon.MessageIcon.Information
+        warn  = QSystemTrayIcon.MessageIcon.Warning
+        if state == "connected":
+            self._notify("WARP Connected", "Your traffic is now protected by WARP.", info)
+        elif state == "connecting":
+            self._notify("WARP Connecting", "Establishing secure tunnel…", info)
+        else:
+            self._notify("WARP Disconnected", "The WARP tunnel has been closed.", warn)
+
+    # ── Commands ──────────────────────────────────────────────────────────────
     def _cmd(self, args, label):
         w = CommandWorker(args, label)
         w.result.connect(lambda msg, ok: self._log_result(msg, ok))
         w.finished.connect(lambda: (
             self._refresh(),
-            self._workers.remove(w) if w in self._workers else None
+            self._workers.remove(w) if w in self._workers else None,
         ))
         self._workers.append(w)
         w.start()
-
-    def _cmd_account(self, args, label):
-        w = CommandWorker(args, label)
-        w.result.connect(lambda msg, ok: (
-            self.account_output.log(msg, GREEN if ok else RED)
-        ))
-        w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
-        self._workers.append(w)
-        w.start()
-        # Also refresh account view
-        self._refresh_account()
 
     def _log_result(self, msg, ok):
         color = GREEN if ok else RED
-        # Log to terminal if it exists
-        if hasattr(self, 'term_output'):
-            self.term_output.log(msg, color)
-
-    def _on_big_toggle(self, on):
-        if on:
-            self._cmd(["connect"], "Connect")
-        else:
-            self._cmd(["disconnect"], "Disconnect")
+        self.term_output.log(msg, color)
 
     def _set_mode(self, mode):
+        self.term_output.log(f"Setting mode → {mode}", ACCENT)
         self._cmd(["mode", mode], f"Set mode {mode}")
-        if hasattr(self, 'term_output'):
-            self.term_output.log(f"Setting mode → {mode}", ACCENT)
 
     def _restart_service(self):
-        if hasattr(self, 'term_output'):
-            self.term_output.log("Requesting warp-svc restart (needs sudo)...", YELLOW)
+        self.term_output.log("Requesting warp-svc restart (needs sudo)…", YELLOW)
         w = ServiceWorker()
-        w.result.connect(lambda msg, ok: (
-            self.term_output.log(msg, GREEN if ok else RED) if hasattr(self, 'term_output') else None
-        ))
+        w.result.connect(lambda msg, ok: self.term_output.log(msg, GREEN if ok else RED))
         w.finished.connect(lambda: (
             self._refresh(),
-            self._workers.remove(w) if w in self._workers else None
+            self._workers.remove(w) if w in self._workers else None,
         ))
         self._workers.append(w)
         w.start()
-
-    def _refresh_dns(self):
-        self.dns_output.log("Fetching DNS stats...", ACCENT)
-        w = CommandWorker(["dns", "stats"], "DNS Stats")
-        w.result.connect(lambda msg, ok: self.dns_output.log(msg, GREEN if ok else RED))
-        w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
-        self._workers.append(w)
-        w.start()
-
-        ws = CommandWorker(["settings"], "Settings")
-        ws.result.connect(lambda msg, ok: self.settings_output.log(msg, TEXT_PRI if ok else RED))
-        ws.finished.connect(lambda: self._workers.remove(ws) if ws in self._workers else None)
-        self._workers.append(ws)
-        ws.start()
-
-    def _refresh_account(self):
-        w = CommandWorker(["account"], "Account")
-        w.result.connect(lambda msg, ok: self.account_output.log(msg, TEXT_PRI if ok else RED))
-        w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
-        self._workers.append(w)
-        w.start()
-
-    def _apply_license(self):
-        key = self.lic_input.text().strip()
-        if not key:
-            return
-        self._cmd(["registration", "license", key], "Apply License")
-        self.lic_input.clear()
 
     def _run_terminal(self):
         text = self.term_input.text().strip()
@@ -1112,23 +906,76 @@ class WarpGUI(QMainWindow):
         self.term_input.setText(cmd)
         self._run_terminal()
 
-    def closeEvent(self, e):
-        for w in self._workers:
-            w.quit()
-        e.accept()
+
+# ─── Single-Instance Guard ────────────────────────────────────────────────────
+_LOCK_PORT = 49742
+
+def _try_become_server():
+    """
+    Attempt to bind a local TCP socket on _LOCK_PORT.
+    Returns the bound socket if we are the first instance, or None if another
+    instance is already running (in which case we also poke it to raise itself).
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+    try:
+        sock.bind(("127.0.0.1", _LOCK_PORT))
+        sock.listen(5)
+        return sock
+    except OSError:
+        # Port already taken = another instance is running; wake it up
+        try:
+            ping = socket.create_connection(("127.0.0.1", _LOCK_PORT), timeout=1)
+            ping.sendall(b"raise")
+            ping.close()
+        except OSError:
+            pass
+        sock.close()
+        return None
+
+
+def _start_listener(server_sock, window):
+    """
+    Background thread: accept connections from future instances and raise
+    the window when they send the 'raise' message.
+    """
+    def _serve():
+        while True:
+            try:
+                conn, _ = server_sock.accept()
+                data = conn.recv(16)
+                conn.close()
+                if data == b"raise":
+                    QTimer.singleShot(0, window._toggle_window)
+            except OSError:
+                break
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 def main():
+    server_sock = _try_become_server()
+    if server_sock is None:
+        print("WARP Control is already running.")
+        sys.exit(0)
+
+    # Needed for tray + notifications on some desktop environments
     app = QApplication(sys.argv)
     app.setApplicationName("WARP Control")
     app.setOrganizationName("warp-gui")
+    app.setQuitOnLastWindowClosed(False)
 
-    # Try to set a nice app icon using text
     window = WarpGUI()
     window.show()
 
-    sys.exit(app.exec())
+    # Start listening for "raise" signals from future launch attempts
+    _start_listener(server_sock, window)
+
+    ret = app.exec()
+    server_sock.close()
+    sys.exit(ret)
 
 
 if __name__ == "__main__":
