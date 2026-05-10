@@ -14,8 +14,8 @@ Dark terminal-inspired UI with sidebar navigation, animated status orb.
 ## Requirements
 
 - Python 3.8+
-- notify-send
 - PyQt6 (`pip install PyQt6`)
+- `notify-send`
 - `warp-cli` installed (from Cloudflare's official repo)
 
 ## Install
@@ -48,3 +48,4 @@ windowrule {
 }
 ```
 - All other operations run as your normal user via `warp-cli`.
+- Version 1.2 now has background activity supoprt!!
