@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-WARP Control GUI — single-page redesign
-• No sidebar: everything lives on one scrollable main page
-• Activity ticker showing what WARP is doing right now
-• Desktop notifications on connect / connecting / disconnect
-• System tray icon so you can hide the window and keep it running
-"""
 
 import sys
 import subprocess
@@ -774,7 +767,7 @@ class WarpGUI(QMainWindow):
     def _setup_timer(self):
         self.auto_timer = QTimer()
         self.auto_timer.timeout.connect(self._refresh)
-        self.auto_timer.start(3000)
+        self.auto_timer.start(300)
 
         self.clock_timer = QTimer()
         self.clock_timer.timeout.connect(
